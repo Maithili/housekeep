@@ -290,9 +290,6 @@ def users_from_clusters():
 
                     if len(recepts_seen_key_cluster.intersection(recepts_unseen_key_cluster)) > 2: # three or more
 
-                        # print('seen recepts--', recepts_seen_key_cluster)
-                        # print('unseen recepts--', recepts_unseen_key_cluster)
-
                         recepts_seen.append(recepts_seen_key_cluster)
                         recepts_unseen.append(recepts_unseen_key_cluster)
 
@@ -317,8 +314,7 @@ def users_from_clusters():
                 user_personas.append(user_x)
 
             elif not any([compare_users(user_x, user_y) for user_y in user_personas]):
-                user_personas.append(user_x)
-                #TODO: delete clusters from original list
+                user_personas.append(user_x) #TODO: delete clusters from original list
 
             else:
                 continue
