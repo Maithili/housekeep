@@ -1,7 +1,10 @@
 import sys
 import pickle
 from itertools import chain
-from copy import deepcopy
+from copy import copy, deepcopy
+
+import warnings
+warnings.filterwarnings('ignore')
 
 import numpy as np
 import pandas as pd
@@ -56,7 +59,7 @@ def cluster_annotators():
     rooms = npy_data['rooms']
 
     # hyperparameters
-    CLUSTERS = 4
+    CLUSTERS = 3
 
     clustering_pandas_df = pd.DataFrame([], 
         columns=['object', 'room', 'identifiers', 'cluster_asgns'])
@@ -137,11 +140,11 @@ def cluster_annotators():
     print(clustering_pandas_df.head(-5))
 
 
-def process_clusters():
+def process_clusters(max_num_clusters):
     ''' Converts clusters of annotator labels to clusters of receptacle indices 
         for each object-room combination.'''
 
-    clustered_object_preferences = pd.read_csv('./user_preferences_clustered_num-4_housekeep_poslessthan1en2.csv')
+    clustered_object_preferences = pd.read_csv(f'./user_preferences_clustered_num-{max_num_clusters}_housekeep_poslessthan1en2.csv')
 
     all_clusters = dict()
 
@@ -175,11 +178,18 @@ def process_clusters():
             else:
                 clusters_or.append(correct_combined)
 
+        if len(clusters_or) == 0: continue 
+
         print(f'{object_name} and {room_name}: {len(clusters_or)} clusters formed')
 
-        all_clusters[f'{object_name}+{room_name}'] = deepcopy(clusters_or) # + for splitting object and room names
+        # if len(clusters_or) != 3: #DEBUG
+        #     print(clusters_or)
+        #     print(assignment_ids)
+        #     input('wait')
 
-    with open('all_clusters_poslessthan1en2.pkl', 'wb') as fw:
+        all_clusters[f'{object_name}+{room_name}'] = deepcopy(clusters_or) # "+" for splitting object and room names
+
+    with open(f'all_clusters_poslessthan1en2_maxclusters{max_num_clusters}.pkl', 'wb') as fw:
         pickle.dump(all_clusters, fw)
 
 
@@ -187,72 +197,148 @@ def users_from_clusters():
     global housekeep_data
     global object2index, rooms2index
 
-    raise NotImplementedError
+    # read list of seen objects
+    with open('./housekeep_seen_objects.txt', 'r') as fh:
+        output = fh.read()
+        seen_objects_hkeep = [o.strip() for o in output.split(',')]
 
-    with open('all_clusters_poslessthan1en2.pkl', 'rb') as fh:
+    # replace whitespace in items in seen_objects_hkeep with hyphen
+    seen_objects_hkeep = [x.replace(' ', '_') for x in seen_objects_hkeep]
+    seen_objects_hkeep = [x.replace('-', '_') for x in seen_objects_hkeep]
+
+
+    # load clusters of correct receptacle labels
+    with open('all_clusters_poslessthan1en2_maxclusters3.pkl', 'rb') as fh:
         cluster_objects_dict = pkl.load(fh)
 
-    filtered_byroom_clusters = dict()
+    # Note: cluster_objects_dict = [obj-room pair] X [num_recept_clusters] X [correct recept labels]
 
-    for key, value in cluster_objects_dict.items():
+    # list of all preference objects
+    clustered_objs_list_all = list(set([k.split('+')[0] for k in cluster_objects_dict.keys()]))
+    print('all clustered objects: ', len(clustered_objs_list_all))
 
-        room = key.split('+')[-1]
+    # split preference objects into seen and unseen
+    clustered_objs_list_seen = [o for o in clustered_objs_list_all if o in seen_objects_hkeep]
+    clustered_objs_list_unseen = [o for o in clustered_objs_list_all if o not in seen_objects_hkeep]
 
-        if room not in desired_rooms: continue
+    # #DEBUG
+    # print('all seen objects in hkeep: ', len(seen_objects_hkeep))
+    # print('total number of obj-room preference pairs: ', len(cluster_objects_dict.keys()))
+    # print(f'seen {len(clustered_objs_list_seen)}')
+    # print(f'unseen {len(clustered_objs_list_unseen)}')
 
-        filtered_byroom_clusters[key] = value
+    user_personas = []
 
-    filtered_keys = list(filtered_byroom_clusters.keys())
+    while len(user_personas) < 15:
 
-    data = []
+        print('Num of user personas finished: ', len(user_personas))
 
-    textfh = open('./log_housekeep_personas_poslessthan1en2.log', 'w')
-    while len(data) < 5000:
+        # [10] random seen objects
+        random_obj_comb_seen = np.random.choice(clustered_objs_list_seen, size=10, replace=False)
 
-        random_key_comb = np.random.choice(filtered_keys, size=10, replace=False)
+        matching_keys_randobj = dict({o: [k for k in cluster_objects_dict.keys() 
+                                            if k.split('+')[0] == o and len(cluster_objects_dict[k])>=1] 
+                                        for o in random_obj_comb_seen})
 
-        object_names = [r.split('+')[0] for r in random_key_comb]
+        assert not any([len(matching_keys_randobj[o]) == 0 for o in random_obj_comb_seen]) #
 
-        if any([object_names.count(f)>1 for f in object_names]): # objects should not repeat
-            continue
+        if len(matching_keys_randobj) < 10: continue # minimum 10 seen objects
 
-        # choose random cluster per object-room combination
-        random_key_clusters = \
-            np.array([np.random.randint(0, len(cluster_objects_dict[k]), size=1)[0] for k in random_key_comb])
-        
-        # argsort the object names
-        sort_indices = np.argsort(random_key_comb)
-        
-        flag_continue = False
-        if len(data) > 0:
-            for elem in data:
-                if all(elem[0] == random_key_comb[sort_indices]): # if set of objects repeat
-                    flag_continue = True
-                    break
+        random_keys_seen = [np.random.choice(matching_keys_randobj[o]) for o in random_obj_comb_seen]
 
-        if flag_continue:
-            continue
+        random_objs_unseen = []
+        random_keys_unseen = []
+        recepts_seen = []
+        recepts_unseen = []
 
-        else:
+        for k_seen in random_keys_seen:
 
-            data.append((random_key_comb[sort_indices], random_key_clusters[sort_indices])) # add to data list
+            found_match = False
 
-            for k, c in zip(random_key_comb[sort_indices], random_key_clusters[sort_indices]): # print
-                textfh.write('{}: {}\n'.format(k, [room_receps[i] for i in cluster_objects_dict[k][c]]))
-            textfh.write('---\n\n')
+            for o_unseen in clustered_objs_list_unseen:
 
-    textfh.close()
+                if found_match: break
 
-    print(f'len of data is {len(data)}')
+                if o_unseen in random_objs_unseen: continue # cannot repeat unseen object
 
-    with open('housekeep_personas_poslessthan1en2.pkl', 'wb') as fw:
-        pkl.dump(data, fw)
+                for k_unseen in [k for k in cluster_objects_dict.keys() if k.split('+')[0] == o_unseen]:
+
+                    if k_unseen in random_keys_unseen: continue # cannot repeat unseen key
+
+                    # find rand cluster for o_seen
+                    if len(cluster_objects_dict[k_seen]) > 1:
+                        random_cluster_seen = np.random.randint(len(cluster_objects_dict[k_seen])-1)
+
+                    elif len(cluster_objects_dict[k_seen]) == 1:
+                        random_cluster_seen = 0
+
+                    else:
+                        raise KeyboardInterrupt
+
+                    # find rand cluster for o_unseen
+                    if len(cluster_objects_dict[k_unseen]) > 1:
+                        random_cluster_unseen = np.random.randint(len(cluster_objects_dict[k_unseen])-1)
+
+                    elif len(cluster_objects_dict[k_unseen]) == 1:
+                        random_cluster_unseen = 0
+
+                    else:
+                        continue
+
+                    # recept labels for o_seen and o_unseen clusters
+                    recepts_seen_key_cluster = set(cluster_objects_dict[k_seen][random_cluster_seen])
+                    recepts_unseen_key_cluster = set(cluster_objects_dict[k_unseen][random_cluster_unseen])
+
+                    if len(recepts_seen_key_cluster.intersection(recepts_unseen_key_cluster)) > 2: # three or more
+
+                        # print('seen recepts--', recepts_seen_key_cluster)
+                        # print('unseen recepts--', recepts_unseen_key_cluster)
+
+                        recepts_seen.append(recepts_seen_key_cluster)
+                        recepts_unseen.append(recepts_unseen_key_cluster)
+
+                        random_objs_unseen.append(o_unseen)
+                        random_keys_unseen.append(k_unseen)
+
+                        found_match = True
+
+                        break
+
+        compare_users = lambda x, y: sorted(x['seen_keys']) == sorted(y['seen_keys']) and sorted(x['unseen_keys']) == sorted(y['unseen_keys'])
+
+        if len(random_keys_seen) == len(random_keys_unseen):
+            user_x = dict({
+                'seen_keys': copy(random_keys_seen),
+                'seen_key_recepts': copy(recepts_seen),
+                'unseen_keys': copy(random_keys_unseen),
+                'unseen_key_recepts': copy(recepts_unseen),
+            })
+
+            if len(user_personas) == 0:
+                user_personas.append(user_x)
+
+            elif not any([compare_users(user_x, user_y) for user_y in user_personas]):
+                user_personas.append(user_x)
+                #TODO: delete clusters from original list
+
+            else:
+                continue
+
+    for i, user_x in enumerate(user_personas):
+        for user_y in user_personas[i+1:]:
+            assert not compare_users(user_x, user_y)
+
+    with open('housekeep_personas_poslessthan1en2_april16.pkl', 'wb') as fw:
+        pkl.dump(user_personas, fw)
+
 
 if __name__ == '__main__':
 
+    np.random.seed(8213546)
+
     if sys.argv[1] == 'cluster':
-        cluster_annotators()
-        process_clusters()
+        # cluster_annotators()
+        process_clusters(max_num_clusters=3)
 
     elif sys.argv[1] == 'generate_data':
         users_from_clusters()
