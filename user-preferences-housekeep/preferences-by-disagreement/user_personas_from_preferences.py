@@ -252,7 +252,6 @@ def users_from_clusters():
         recepts_unseen = []
 
         for k_seen in random_keys_seen:
-
             found_match = False
 
             for o_unseen in clustered_objs_list_unseen:
@@ -328,8 +327,16 @@ def users_from_clusters():
         for user_y in user_personas[i+1:]:
             assert not compare_users(user_x, user_y)
 
-    with open('housekeep_personas_poslessthan1en2_april16.pkl', 'wb') as fw:
-        pkl.dump(user_personas, fw)
+    persona_data_dict = dict({
+        'num_users': 15,
+        'clusters_file': 'all_clusters_poslessthan1en2_maxclusters3.pkl',
+        'personas': user_personas,
+        })
+
+    assert persona_data_dict['num_users'] == len(persona_data_dict['personas'])
+
+    with open('housekeep_personas_poslessthan1en2_maxclusters3.pkl', 'wb') as fw:
+        pkl.dump(persona_data_dict, fw)
 
 
 if __name__ == '__main__':
