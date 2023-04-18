@@ -1,13 +1,13 @@
 import os
 import sys
 import pickle as pkl
+from datetime import datetime
 from copy import deepcopy
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer, CLIPTextModel
-
+from transformers import DistilBertModel, AutoTokenizer
 
 ## GLOBAL VARIABLES -----------------------------
 
@@ -19,6 +19,31 @@ roomrecepts2index = dict({v:int(k) for k, v in enumerate(npy_data['room_receptac
 
 housekeep_data = npy_data['data']
 
+
+class DistillBERTEmbeddingGenerator():
+    def __init__ (self):
+        self.tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+        self.model = DistilBertModel.from_pretrained("distilbert-base-uncased")
+        self.map = {'objects':{}, 'recepts':{}}
+
+    def __call__(self, text, token_type):
+
+        assert token_type in self.map.keys()
+
+        if text in self.map[token_type].keys(): # embb already computed
+            return 
+
+        assert '_' not in text, f'Underscore in text: {text}'
+
+        inputs = self.tokenizer(text=text, return_tensors="pt")
+        outputs = self.model(**inputs)
+
+        last_hidden_states = outputs.last_hidden_state[0,1:-1,:]
+        last_hidden_states = last_hidden_states.mean(dim=0)
+        assert last_hidden_states.size() == torch.Size([768])
+
+        self.map[token_type][text] = last_hidden_states.detach()
+    
 
 def generate_train_data(persona_data):
     global rooms2index, roomrecepts2index    
@@ -162,7 +187,7 @@ def generate_test_data(persona_data):
     return test_pos_data_dict, test_neg_data_dict
 
 
-def tensor_data_with_clip(data_dict, model, tokenizer):
+def tensor_data_with_clip(data_dict, bert_generator):
 
     keys_list = list(data_dict.keys())
 
@@ -173,31 +198,30 @@ def tensor_data_with_clip(data_dict, model, tokenizer):
     recepts_list = []
 
     for key in keys_list:
-        objects_list.append(data_dict[key]['object_name'].replace('_', ' '))
-        recepts_list.append(data_dict[key]['recept_name'].replace('_', ' '))
+        object_name = data_dict[key]['object_name'].replace('_', ' ')
+        bert_generator(object_name, 'objects')
+        objects_list.append(object_name)
+        
+        recept_name = data_dict[key]['recept_name'].replace('_', ' ')
+        bert_generator(recept_name, 'recepts')
+        recepts_list.append(recept_name)
 
-    # print(objects_list)
-    # print(recepts_list)
-
-    objects_tokens = tokenizer(objects_list, padding=True, return_tensors="pt")
-    objects_embbs = model(**objects_tokens).pooler_output
-
-    recepts_tokens = tokenizer(recepts_list, padding=True, return_tensors="pt")
-    recepts_embbs = model(**recepts_tokens).pooler_output
+    print('Objects: ', len(bert_generator.map['objects']))
+    print('Recepts: ', len(bert_generator.map['recepts']))
 
     updated_data_dict = deepcopy(data_dict)
 
-    print(objects_embbs.shape)
-    print(recepts_embbs.shape)
-
     for i, key in enumerate(keys_list):
 
-        updated_data_dict[key]['object_embb'] = objects_embbs[i, :]
-        updated_data_dict[key]['recept_embb'] = recepts_embbs[i, :]
+        object_name = data_dict[key]['object_name'].replace('_', ' ')
+        updated_data_dict[key]['object_embb'] = bert_generator.map['objects'][object_name]
+
+        recept_name = data_dict[key]['recept_name'].replace('_', ' ')
+        updated_data_dict[key]['recept_embb'] = bert_generator.map['recepts'][recept_name]
 
     return updated_data_dict
 
-def main():
+def main(persona_data_path):
     global npy_data
     global rooms2index, roomrecepts2index
 
@@ -205,44 +229,43 @@ def main():
     global user_encoding_matrix
     global room_encoding_matrix
 
+    dateTimeObj = datetime.now()
+    timestampStr = dateTimeObj.strftime("%d-%m-%Y_%H-%M-%S")
+
     rooms_all = npy_data['rooms']
     room_recepts_all = npy_data['room_receptacles']
     
     # load persona data
-    with open('housekeep_personas_poslessthan1en2_maxclusters3.pkl', 'rb') as fh:
+    with open(persona_data_path, 'rb') as fh:
         persona_data_dict = pkl.load(fh)
 
     persona_data = persona_data_dict['personas']
-    print(persona_data[0]['seen_keys'])
-    print(persona_data[0]['seen_key_recepts'])
-    print(persona_data[0]['unseen_keys'])
-    print(persona_data[0]['unseen_key_recepts'])
+    # print(persona_data[0]['seen_keys'])
+    # print(persona_data[0]['seen_key_recepts'])
+    # print(persona_data[0]['unseen_keys'])
+    # print(persona_data[0]['unseen_key_recepts'])
 
-    # representation = {clip for object, clip for receptacle, 
-    #                       one hot for room, one hot for user}
-    # output = score 0 to 1
-    # questions: sampling negative examples? test on negative examples?
-
+    # one hot encoding matrices for users and rooms
     user_encoding_matrix = F.one_hot(
-        torch.arange(0, int(persona_data_dict['num_users'])))
+        torch.arange(0, int(persona_data_dict['config']['num_users'])))
     room_encoding_matrix = F.one_hot(
         torch.arange(0, len(rooms_all)))
 
     train_pos_data_dict, train_neg_data_dict = generate_train_data(persona_data)
     test_pos_data_dict, test_neg_data_dict = generate_test_data(persona_data)
 
-    model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
-    tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+    bert_generator = DistillBERTEmbeddingGenerator()
 
-    train_pos_tensor_data = tensor_data_with_clip(train_pos_data_dict, model, tokenizer)
-    train_neg_tensor_data = tensor_data_with_clip(train_neg_data_dict, model, tokenizer)
-    test_pos_tensor_data = tensor_data_with_clip(test_pos_data_dict, model, tokenizer)
-    test_neg_tensor_data = tensor_data_with_clip(test_neg_data_dict, model, tokenizer)
+    train_pos_tensor_data = tensor_data_with_clip(train_pos_data_dict, bert_generator)
+    train_neg_tensor_data = tensor_data_with_clip(train_neg_data_dict, bert_generator)
+    test_pos_tensor_data = tensor_data_with_clip(test_pos_data_dict, bert_generator)
+    test_neg_tensor_data = tensor_data_with_clip(test_neg_data_dict, bert_generator)
 
-    torch.save(dict({'train-pos': train_pos_tensor_data, 
+    torch.save(dict({'config': persona_data_dict['config'],
+                    'train-pos': train_pos_tensor_data, 
                      'train-neg': train_neg_tensor_data, 
                      'test-pos': test_pos_tensor_data, 
-                     'test-neg': test_neg_tensor_data}), 'personas_tensor_data.pt')
+                     'test-neg': test_neg_tensor_data}), 'personas_tensor_data_{}.pt'.format(timestampStr))
 
 
 if __name__ == '__main__':
@@ -250,8 +273,5 @@ if __name__ == '__main__':
     np.random.seed(8213546)
     torch.manual_seed(8213546)
 
-    if sys.argv[1] == 'save_tensor':
-        main()
-
-    else:
-        raise NotImplementedError('Unknown argument: {}. Please use `save_tensor`.'.format(sys.argv[1]))
+    assert os.path.exists(sys.argv[1]), 'File not found: {}'.format(sys.argv[1])
+    main(sys.argv[1])
