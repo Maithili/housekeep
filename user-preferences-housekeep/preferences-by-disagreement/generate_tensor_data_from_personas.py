@@ -1,17 +1,12 @@
 import os
 import sys
 import pickle as pkl
+from copy import deepcopy
 
-'''
-from transformers import AutoTokenizer, CLIPTextModel
-model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
-tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-inputs = tokenizer(["a photo of a cat", "a photo of a dog"], padding=True, return_tensors="pt")
-outputs = model(**inputs)
-'''
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
+from transformers import AutoTokenizer, CLIPTextModel
 
 
 ## GLOBAL VARIABLES -----------------------------
@@ -33,7 +28,8 @@ def generate_train_data(persona_data):
     global room_encoding_matrix
 
     data_id = 0
-    train_data_dict = dict()
+    train_pos_data_dict = dict()
+    train_neg_data_dict = dict()
 
     for pid in range(len(persona_data)):
 
@@ -56,7 +52,7 @@ def generate_train_data(persona_data):
                     print(f'Seen (user {pid}, key {skey}): {srecept_roomname} does not match with {room_name}')
                     continue # skip this example 
 
-                train_data_dict[f'u{pid}-d{data_id}-seen'] = dict({
+                train_pos_data_dict[f'u{pid}-d{data_id}-seen'] = dict({
                     'data_id': data_id,
                     'object_name': object_name, 
                     'recept_name': srecept_receptname,
@@ -80,7 +76,7 @@ def generate_train_data(persona_data):
 
                 neg_roomname, neg_receptname = neg_room_recept.split('|')
 
-                train_data_dict[f'u{pid}-d{data_id}-seen'] = dict({
+                train_neg_data_dict[f'u{pid}-d{data_id}-seen'] = dict({
                     'data_id': data_id,
                     'object_name': object_name, 
                     'recept_name': neg_receptname,
@@ -92,7 +88,7 @@ def generate_train_data(persona_data):
 
                 data_id += 1
 
-    return train_data_dict
+    return train_pos_data_dict, train_neg_data_dict
 
 
 def generate_test_data(persona_data):
@@ -103,7 +99,8 @@ def generate_test_data(persona_data):
     global room_encoding_matrix
 
     data_id = 0
-    test_data_dict = dict()
+    test_pos_data_dict = dict()
+    test_neg_data_dict = dict()
 
     for pid in range(len(persona_data)):
 
@@ -126,7 +123,7 @@ def generate_test_data(persona_data):
                     print(f'Unseen (user {pid}, key {uskey}): {usrecept_roomname} does not match with {room_name}')
                     continue # skip this example 
 
-                test_data_dict[f'u{pid}-d{data_id}-unseen'] = dict({
+                test_pos_data_dict[f'u{pid}-d{data_id}-unseen'] = dict({
                     'data_id': data_id,
                     'object_name': object_name, 
                     'recept_name': usrecept_receptname,
@@ -150,7 +147,7 @@ def generate_test_data(persona_data):
 
                 neg_roomname, neg_receptname = neg_room_recept.split('|')
 
-                test_data_dict[f'u{pid}-d{data_id}-unseen'] = dict({
+                test_neg_data_dict[f'u{pid}-d{data_id}-unseen'] = dict({
                     'data_id': data_id,
                     'object_name': object_name, 
                     'recept_name': neg_receptname,
@@ -162,8 +159,43 @@ def generate_test_data(persona_data):
 
                 data_id += 1
 
-    return test_data_dict
+    return test_pos_data_dict, test_neg_data_dict
 
+
+def tensor_data_with_clip(data_dict, model, tokenizer):
+
+    keys_list = list(data_dict.keys())
+
+    # inputs = tokenizer(["a photo of a cat", "a photo of a dog"], padding=True, return_tensors="pt")
+    # outputs = model(**inputs)
+
+    objects_list = []
+    recepts_list = []
+
+    for key in keys_list:
+        objects_list.append(data_dict[key]['object_name'].replace('_', ' '))
+        recepts_list.append(data_dict[key]['recept_name'].replace('_', ' '))
+
+    # print(objects_list)
+    # print(recepts_list)
+
+    objects_tokens = tokenizer(objects_list, padding=True, return_tensors="pt")
+    objects_embbs = model(**objects_tokens).pooler_output
+
+    recepts_tokens = tokenizer(recepts_list, padding=True, return_tensors="pt")
+    recepts_embbs = model(**recepts_tokens).pooler_output
+
+    updated_data_dict = deepcopy(data_dict)
+
+    print(objects_embbs.shape)
+    print(recepts_embbs.shape)
+
+    for i, key in enumerate(keys_list):
+
+        updated_data_dict[key]['object_embb'] = objects_embbs[i, :]
+        updated_data_dict[key]['recept_embb'] = recepts_embbs[i, :]
+
+    return updated_data_dict
 
 def main():
     global npy_data
@@ -196,8 +228,21 @@ def main():
     room_encoding_matrix = F.one_hot(
         torch.arange(0, len(rooms_all)))
 
-    train_data_dict = generate_train_data(persona_data)
-    test_data_dict = generate_test_data(persona_data)
+    train_pos_data_dict, train_neg_data_dict = generate_train_data(persona_data)
+    test_pos_data_dict, test_neg_data_dict = generate_test_data(persona_data)
+
+    model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
+    tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+
+    train_pos_tensor_data = tensor_data_with_clip(train_pos_data_dict, model, tokenizer)
+    train_neg_tensor_data = tensor_data_with_clip(train_neg_data_dict, model, tokenizer)
+    test_pos_tensor_data = tensor_data_with_clip(test_pos_data_dict, model, tokenizer)
+    test_neg_tensor_data = tensor_data_with_clip(test_neg_data_dict, model, tokenizer)
+
+    torch.save(dict({'train-pos': train_pos_tensor_data, 
+                     'train-neg': train_neg_tensor_data, 
+                     'test-pos': test_pos_tensor_data, 
+                     'test-neg': test_neg_tensor_data}), 'personas_tensor_data.pt')
 
 
 if __name__ == '__main__':
