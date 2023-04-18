@@ -2,6 +2,7 @@ import sys
 import pickle
 from itertools import chain
 from copy import copy, deepcopy
+from datetime import datetime
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -19,6 +20,9 @@ object2index = dict({v:k for k, v in enumerate(npy_data['objects'])})
 rooms2index = dict({v:k for k, v in enumerate(npy_data['rooms'])})
 
 housekeep_data = npy_data['data']
+
+dateTimeObj = datetime.now()
+timestampStr = dateTimeObj.strftime("%d-%m-%Y_%H-%M-%S")
 
 ## UTILS -----------------------------
 
@@ -49,7 +53,7 @@ def distance_metric(x, y):
 ## SCRIPTS -----------------------------
 
 
-def cluster_annotators():
+def cluster_annotators(config):
     ''' Clusters annotator labels by representing correct receptacles 
         as a vector and performing agglomerative clustering.'''
 
@@ -61,9 +65,6 @@ def cluster_annotators():
 
     assert len(objects) == 268
     assert len(rooms) == 17
-
-    # hyperparameters
-    CLUSTERS = 3
 
     clustering_pandas_df = pd.DataFrame([], 
         columns=['object', 'room', 'identifiers', 'cluster_asgns'])
@@ -116,7 +117,7 @@ def cluster_annotators():
                     pairwise_dist_mat[i1, i2] = distance_metric(d1, d2)
 
             # clusters
-            num_clusters = CLUSTERS
+            num_clusters = config['max_num_clusters']
 
             clusters = AgglomerativeClustering(n_clusters=num_clusters, affinity="precomputed", linkage="single").fit_predict(pairwise_dist_mat)
             unique_cluster_asgns, cluster_counts = np.unique(clusters, return_counts=True)
@@ -147,14 +148,15 @@ def cluster_annotators():
     print(clustering_pandas_df.head(-5))
 
 
-def process_clusters(max_num_clusters):
+def process_clusters(config):
     ''' Converts clusters of annotator labels to clusters of receptacle indices 
         for each object-room combination.'''
 
     global npy_data
     room_receps = npy_data['room_receptacles']
 
-    clustered_object_preferences = pd.read_csv(f'./user_preferences_clustered_num-{max_num_clusters}_housekeep_poslessthan1en2.csv')
+    clustered_object_preferences = \
+        pd.read_csv('./user_preferences_clustered_num-{}_housekeep_poslessthan1en2.csv'.format(config['max_num_clusters']))
 
     all_clusters = dict()
 
@@ -210,13 +212,14 @@ def process_clusters(max_num_clusters):
 
         all_clusters[f'{object_name}+{room_name}'] = deepcopy(clusters_or) # "+" for splitting object and room names
 
-    with open(f'all_clusters_poslessthan1en2_maxclusters{max_num_clusters}.pkl', 'wb') as fw:
+    with open('all_clusters_poslessthan1en2_maxclusters{}.pkl'.format(config['max_num_clusters']), 'wb') as fw:
         pickle.dump(all_clusters, fw)
 
 
-def users_from_clusters():
+def users_from_clusters(config):
     global housekeep_data
     global object2index, rooms2index
+    global timestampStr
 
     # read list of seen objects
     with open('./housekeep_seen_objects.txt', 'r') as fh:
@@ -229,7 +232,7 @@ def users_from_clusters():
 
 
     # load clusters of correct receptacle labels
-    with open('all_clusters_poslessthan1en2_maxclusters3.pkl', 'rb') as fh:
+    with open('all_clusters_poslessthan1en2_maxclusters{}.pkl'.format(config['max_num_clusters']), 'rb') as fh:
         cluster_objects_dict = pkl.load(fh)
 
     # Note: cluster_objects_dict = [obj-room pair] X [num_recept_clusters] X [correct recept labels]
@@ -250,12 +253,14 @@ def users_from_clusters():
 
     user_personas = []
 
-    while len(user_personas) < 15:
+    while len(user_personas) < config['num_users']:
 
         print('Num of user personas finished: ', len(user_personas))
 
         # [10] random seen objects
-        random_obj_comb_seen = np.random.choice(clustered_objs_list_seen, size=10, replace=False)
+        random_obj_comb_seen = np.random.choice(clustered_objs_list_seen, 
+                                                    size=config['num_objects_per_user'], 
+                                                    replace=False)
 
         matching_keys_randobj = dict({o: [k for k in cluster_objects_dict.keys() 
                                             if k.split('+')[0] == o and len(cluster_objects_dict[k])>=1] 
@@ -345,14 +350,14 @@ def users_from_clusters():
             assert not compare_users(user_x, user_y)
 
     persona_data_dict = dict({
-        'num_users': 15,
-        'clusters_file': 'all_clusters_poslessthan1en2_maxclusters3.pkl',
+        'config': config,
+        'clusters_file': 'all_clusters_poslessthan1en2_maxclusters{}.pkl'.format(config['max_num_clusters']),
         'personas': user_personas,
         })
 
-    assert persona_data_dict['num_users'] == len(persona_data_dict['personas'])
+    assert persona_data_dict['config']['num_users'] == len(persona_data_dict['personas'])
 
-    with open('housekeep_personas_poslessthan1en2_maxclusters3.pkl', 'wb') as fw:
+    with open('housekeep_personas_poslessthan1en2_{}.pkl'.format(timestampStr), 'wb') as fw:
         pkl.dump(persona_data_dict, fw)
 
 
@@ -360,12 +365,18 @@ if __name__ == '__main__':
 
     np.random.seed(8213546)
 
+    config = dict({
+        'max_num_clusters': 3,
+        'num_users': 100,
+        'num_objects_per_user': 20
+    })
+
     if sys.argv[1] == 'cluster':
-        cluster_annotators()
-        process_clusters(max_num_clusters=3)
+        cluster_annotators(config)
+        process_clusters(config)
 
     elif sys.argv[1] == 'generate_data':
-        users_from_clusters()
+        users_from_clusters(config)
 
     else:
         raise NotImplementedError('Unknown argument: {}. Please use either `cluster` or `generate_data`.'.format(sys.argv[1]))
