@@ -57,6 +57,10 @@ def cluster_annotators():
 
     objects = npy_data['objects']
     rooms = npy_data['rooms']
+    room_receps = npy_data['room_receptacles']
+
+    assert len(objects) == 268
+    assert len(rooms) == 17
 
     # hyperparameters
     CLUSTERS = 3
@@ -91,6 +95,9 @@ def cluster_annotators():
 
             # lists to vector
             for i, d in housekeep_data.loc[filtered_values].iterrows():
+
+                room_recep_names = [room_receps[i].split('|')[0] for i in d['correct']]
+                assert all([room_name == n for n in room_recep_names]), f'{room_name}, {room_recep_names}'
 
                 vec = receptacle_labels2vec(d['correct'])
 
@@ -144,6 +151,9 @@ def process_clusters(max_num_clusters):
     ''' Converts clusters of annotator labels to clusters of receptacle indices 
         for each object-room combination.'''
 
+    global npy_data
+    room_receps = npy_data['room_receptacles']
+
     clustered_object_preferences = pd.read_csv(f'./user_preferences_clustered_num-{max_num_clusters}_housekeep_poslessthan1en2.csv')
 
     all_clusters = dict()
@@ -162,11 +172,22 @@ def process_clusters(max_num_clusters):
         for c in np.unique(clustering_asgns): # actually cluster the items
             indexes = np.where(clustering_asgns==c)[0]
 
-            correct = [housekeep_data[(housekeep_data['object_idx'] == object2index[object_name]) &
+            correct = []
+
+            for i in indexes:
+                temp = housekeep_data[(housekeep_data['object_idx'] == object2index[object_name]) &
+                                      (housekeep_data['room_idx'] == rooms2index[room_name]) &
                                         (housekeep_data['annotator_idx'] == annotators[i]) &
-                                        (housekeep_data['assignment_idx'] == assignment_ids[i])]['correct'].tolist()[0]
-                        for i in indexes]
+                                        (housekeep_data['assignment_idx'] == assignment_ids[i])]['correct'].tolist()
+
+                assert len(temp) == 1, 'multiple obj-ann-asgn combos'
+
+                correct.append(temp[0])
+
+            # sort
             correct_combined = sorted(set(chain.from_iterable(correct)))
+
+            assert all([room_name == room_receps[c].split('|')[0] for c in correct_combined])
 
             if len(correct_combined) == 0: # if annotators did not mark any correct receptacle, skip
                 continue
@@ -340,7 +361,7 @@ if __name__ == '__main__':
     np.random.seed(8213546)
 
     if sys.argv[1] == 'cluster':
-        # cluster_annotators()
+        cluster_annotators()
         process_clusters(max_num_clusters=3)
 
     elif sys.argv[1] == 'generate_data':
