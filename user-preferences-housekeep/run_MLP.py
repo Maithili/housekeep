@@ -13,15 +13,18 @@ class MLP(pl.LightningModule):
     def __init__(self, input_size, config):
         super().__init__()
         self.fc1 = nn.Linear(input_size, config['hidden_size'])
-        self.fc2 = nn.Linear(config['hidden_size'], config['output_size'])
+        self.fc2 = nn.Linear(config['hidden_size'], config['hidden_size'])
+        self.fc3 = nn.Linear(config['hidden_size'], config['output_size'])
 
         self.config = config
 
         self.loss = nn.BCEWithLogitsLoss()
+        self.train_log = []
 
     def forward(self, x):
         x = torch.relu(self.fc1(x))
-        x = self.fc2(x)
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
 
     def training_step(self, batch, batch_idx):
@@ -29,6 +32,7 @@ class MLP(pl.LightningModule):
         y_hat = self.forward(x)
         loss = self.loss(y_hat.squeeze(1), y)
         self.log('train_loss', loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.train_log.append(loss.clone().detach().cpu().numpy())
         return loss
 
     def configure_optimizers(self):
@@ -38,6 +42,28 @@ class MLP(pl.LightningModule):
     def test_step(self, test_batches, batch_idx):
 
         self.eval()
+
+        #DEBUG (delete later)
+        if len(test_batches) == 2:
+            x, y = test_batches
+            y_hat = self.forward(x)
+            y_pred = torch.sigmoid(y_hat.squeeze(1))
+            y_pred = torch.round(y_pred)
+
+            # compute confusion matrix metrics
+            tp = torch.sum((y == 1) & (y_pred == 1))
+            tn = torch.sum((y == 0) & (y_pred == 0))
+            fp = torch.sum((y == 0) & (y_pred == 1))
+            fn = torch.sum((y == 1) & (y_pred == 0))
+            confusion_matrix = torch.tensor([[tp, fp], [fn, tn]])
+
+            # metrics
+            precision = tp / (tp + fp)
+            recall = tp / (tp + fn)
+            accuracy = (tp + tn) / (tp + tn + fp + fn)
+            f1 = 2 * (precision * recall) / (precision + recall)
+
+            return f1
 
         x, y, user_labels = test_batches
         y_hat = self.forward(x)
@@ -225,10 +251,11 @@ def main():
         'output_size': 1,
         'batch_size': 64,
         'max_epochs': 10,
-        'lr': 0.005,
+        'lr': 1e-4,
+        'num_layers': 2,
         'weight_decay': 1e-6,
         'data_path': 'preferences-by-disagreement/personas_tensor_data_18-04-2023_13-24-46.pt',
-        'user_conditioned': False
+        'user_conditioned': True
     }
 
     # load data
@@ -243,6 +270,9 @@ def main():
                                 collate_fn=train_dataset.collate_fn)
 
 
+    full_train_loader = DataLoader(train_dataset, batch_size=len(train_dataset), shuffle=True, 
+                                collate_fn=train_dataset.collate_fn)
+
     test_loader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=True, 
                                 collate_fn=test_dataset.collate_fn)
 
@@ -252,20 +282,35 @@ def main():
     model = MLP(input_size=train_dataset.return_input_dim(), config=config)
     print('model is ready')
 
-    trainer = pl.Trainer(devices=1, max_epochs=config['max_epochs'])
-    trainer.fit(model, train_loader)
-
-    model.to(device)
+    # before training
     test_batch = next(iter(test_loader))
-    print(len(test_batch))
+    model.to(device)
     confusion_matrix, test_metrics, output = model.test_step(test_batch, 0)
 
     print('confusion matrix: ', confusion_matrix.cpu().numpy())
     print('f1: ', test_metrics['f1'].cpu().numpy())
 
+    # training
+    trainer = pl.Trainer(devices=1, max_epochs=config['max_epochs'])
+    trainer.fit(model, train_loader)
+
+    # after training
+    model.to(device)
+    full_train_batch = next(iter(full_train_loader))
+    train_f1 = model.test_step(full_train_batch, 0)
+    print('f1 train: ', train_f1.cpu().numpy())
+
+    model.to(device)
+    confusion_matrix, test_metrics, output = model.test_step(test_batch, 0)
+
+    print('confusion matrix: ', confusion_matrix.cpu().numpy())
+    print('f1: ', test_metrics['f1'].cpu().numpy())
+
+    # save results
     with open('results_{}.pkl'.format(timestampStr), 'wb') as f:
         pkl.dump(dict({
             'config:': config,
+            'train_loss': model.train_log,
             'confusion_matrix': confusion_matrix.cpu().numpy(),
             'test_metrics': test_metrics,
             'output': output
