@@ -239,6 +239,7 @@ def main(persona_data_path):
     with open(persona_data_path, 'rb') as fh:
         persona_data_dict = pkl.load(fh)
 
+    # TODO: odd obj-recpt pairs train, even obj0recpt pairs test, and keep the user ids intact!
     persona_data = persona_data_dict['personas']
     # print(persona_data[0]['seen_keys'])
     # print(persona_data[0]['seen_key_recepts'])
