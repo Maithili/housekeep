@@ -12,6 +12,8 @@ torch.manual_seed(2345678)
 class MLP(pl.LightningModule):
     def __init__(self, input_size, config):
         super().__init__()
+
+        # 2-layer MLP
         self.fc1 = nn.Linear(input_size, config['hidden_size'])
         self.fc2 = nn.Linear(config['hidden_size'], config['hidden_size'])
         self.fc3 = nn.Linear(config['hidden_size'], config['output_size'])
@@ -43,7 +45,8 @@ class MLP(pl.LightningModule):
 
         self.eval()
 
-        #DEBUG (delete later)
+        '''
+        #DEBUG 
         if len(test_batches) == 2:
             x, y = test_batches
             y_hat = self.forward(x)
@@ -64,8 +67,9 @@ class MLP(pl.LightningModule):
             f1 = 2 * (precision * recall) / (precision + recall)
 
             return f1
+        '''
 
-        x, y, user_labels = test_batches
+        x, y, data_dict_list = test_batches
         y_hat = self.forward(x)
         y_pred = torch.sigmoid(y_hat.squeeze(1))
         y_pred = torch.round(y_pred)
@@ -73,7 +77,10 @@ class MLP(pl.LightningModule):
         return_output = dict({
             'y': y.cpu().numpy(),
             'y_pred': y_pred.cpu().detach().numpy(),
-            'user_labels': user_labels
+            'user_labels': [data_dict['user_id'] 
+                                for data_dict in data_dict_list],
+            'seen_labels': [data_dict['seen_object']
+                                for data_dict in data_dict_list],
         })
 
         # compute confusion matrix metrics
@@ -104,28 +111,14 @@ class Dataset(torch.utils.data.Dataset):
         self.data_dict = data
         self.device = device
 
-        self.train_pos = self.data_dict['train-pos']
-        self.train_pos_keys = list(self.train_pos.keys())
-        self.train_pos_indextokey = dict({
-            int(k.split('-')[1][1:]): k for k in self.train_pos_keys
+        self.train_data = self.data_dict['train']
+        self.train_data_indextokey = dict({
+            i: k for i, k in enumerate(self.train_data.keys())
             })
 
-        self.train_neg = self.data_dict['train-neg']
-        self.train_neg_keys = list(self.train_neg.keys())
-        self.train_neg_indextokey = dict({
-            int(k.split('-')[1][1:]): k for k in self.train_neg_keys
-            })
-
-        self.test_pos = self.data_dict['test-pos']
-        self.test_pos_keys = list(self.test_pos.keys())
-        self.test_pos_indextokey = dict({
-            int(k.split('-')[1][1:]): k for k in self.test_pos_keys
-            })
-
-        self.test_neg = self.data_dict['test-neg']
-        self.test_neg_keys = list(self.test_neg.keys())
-        self.test_neg_indextokey = dict({
-            int(k.split('-')[1][1:]): k for k in self.test_neg_keys
+        self.test_data = self.data_dict['test']
+        self.test_data_indextokey = dict({
+            i: k for i, k in enumerate(self.test_data.keys())
             })
 
         self.is_train = is_train
@@ -133,73 +126,47 @@ class Dataset(torch.utils.data.Dataset):
 
         if self.user_conditioned:
             self.input_tensor_dim = \
-                self.train_pos[self.train_pos_keys[0]]['object_embb'].shape[0] + \
-                self.train_pos[self.train_pos_keys[0]]['recept_embb'].shape[0] + \
-                self.train_pos[self.train_pos_keys[0]]['room_embb'].shape[0] + \
-                self.train_pos[self.train_pos_keys[0]]['user_embb'].shape[0]
+                self.train_data[self.train_data_indextokey[0]]['object_embb'].shape[0] + \
+                self.train_data[self.train_data_indextokey[0]]['recept_embb'].shape[0] + \
+                self.train_data[self.train_data_indextokey[0]]['room_embb'].shape[0] + \
+                self.train_data[self.train_data_indextokey[0]]['user_embb'].shape[0]
         else:
             self.input_tensor_dim = \
-                self.train_pos[self.train_pos_keys[0]]['object_embb'].shape[0] + \
-                self.train_pos[self.train_pos_keys[0]]['recept_embb'].shape[0] + \
-                self.train_pos[self.train_pos_keys[0]]['room_embb'].shape[0]
+                self.train_data[self.train_data_indextokey[0]]['object_embb'].shape[0] + \
+                self.train_data[self.train_data_indextokey[0]]['recept_embb'].shape[0] + \
+                self.train_data[self.train_data_indextokey[0]]['room_embb'].shape[0]
 
     def __getitem__(self, index):
 
         if self.is_train:
-            # print('train index', index)
 
-            if index in self.train_pos_indextokey.keys():
+            assert index in self.train_data_indextokey.keys()
 
-                key_match = self.train_pos_indextokey[index]
-                assert key_match in self.train_pos.keys() and key_match in self.train_pos_keys
-                
-                return dict({
-                    'index': key_match,
-                    'data': self.train_pos[key_match]  
-                })
+            key_match = self.train_data_indextokey[index]
 
-            elif index in self.train_neg_indextokey.keys():
-
-                key_match = self.train_neg_indextokey[index]
-                assert key_match in self.train_neg.keys() and key_match in self.train_neg_keys
-
-                return dict({
-                    'index': key_match,
-                    'data': self.train_neg[key_match]  
-                })
+            assert key_match in self.train_data.keys()
+            assert self.train_data[key_match]['is_train'] == True
+            
+            return self.train_data[key_match]  
 
         else:
-            # print('test index', index)
 
-            if index in self.test_pos_indextokey.keys():
+            assert index in self.test_data_indextokey.keys()
 
-                key_match = self.test_pos_indextokey[index]
-                assert key_match in self.test_pos.keys() and key_match in self.test_pos_keys
+            key_match = self.test_data_indextokey[index]
 
-                return dict({
-                    'index': key_match,
-                    'data': self.test_pos[key_match]  
-                })
+            assert key_match in self.test_data.keys()
+            assert self.test_data[key_match]['is_train'] == False
 
-            elif index in self.test_neg_indextokey.keys():
-                
-                key_match = self.test_neg_indextokey[index]
-                assert key_match in self.test_neg.keys() and key_match in self.test_neg_keys
-
-                return dict({
-                    'index': key_match,
-                    'data': self.test_neg[key_match]  
-                })
-
-        raise KeyError(f'Index {index} not found in dataset')
-
+            return self.test_data[key_match]
+    
     def __len__(self):
 
         if self.is_train:
-            return len(self.train_pos) + len(self.train_neg)
+            return len(self.train_data)
 
         else:
-            return len(self.test_pos) + len(self.test_neg)
+            return len(self.test_data)
 
     def return_input_dim(self):
         return self.input_tensor_dim
@@ -210,13 +177,13 @@ class Dataset(torch.utils.data.Dataset):
                 data_points: A list of dicts'''
 
         # data_points is a list of dicts
-        object_embbs = torch.concatenate([torch.tensor(d['data']['object_embb']).unsqueeze(0) for d in data_points], dim=0)
-        recept_embbs = torch.concatenate([torch.tensor(d['data']['recept_embb']).unsqueeze(0) for d in data_points], dim=0)
-        room_embbs = torch.concatenate([torch.tensor(d['data']['room_embb']).unsqueeze(0) for d in data_points], dim=0)
+        object_embbs = torch.concatenate([torch.tensor(d['object_embb']).unsqueeze(0) for d in data_points], dim=0)
+        recept_embbs = torch.concatenate([torch.tensor(d['recept_embb']).unsqueeze(0) for d in data_points], dim=0)
+        room_embbs = torch.concatenate([torch.tensor(d['room_embb']).unsqueeze(0) for d in data_points], dim=0)
 
         if self.user_conditioned:
 
-            user_embbs = torch.concatenate([torch.tensor(d['data']['user_embb']).unsqueeze(0) for d in data_points], dim=0)
+            user_embbs = torch.concatenate([torch.tensor(d['user_embb']).unsqueeze(0) for d in data_points], dim=0)
 
             input_tensor = torch.cat([object_embbs, recept_embbs, room_embbs, user_embbs], dim=1)
 
@@ -224,7 +191,7 @@ class Dataset(torch.utils.data.Dataset):
 
             input_tensor = torch.cat([object_embbs, recept_embbs, room_embbs], dim=1)
 
-        labels = torch.tensor([d['data']['ground_truth_score'] for d in data_points])
+        labels = torch.tensor([d['ground_truth_score'] for d in data_points])
 
         # print(input_tensor.shape) #DEBUG
         # print(labels.shape)
@@ -237,7 +204,7 @@ class Dataset(torch.utils.data.Dataset):
         else:
             return input_tensor.to(self.device), \
                     labels.type(torch.float).to(self.device), \
-                    [d['index'] for d in data_points]
+                    data_points
 
 
 def main():
@@ -254,7 +221,7 @@ def main():
         'lr': 1e-4,
         'num_layers': 2,
         'weight_decay': 1e-6,
-        'data_path': 'preferences-by-disagreement/personas_tensor_data_18-04-2023_13-24-46.pt',
+        'data_path': 'preferences-by-disagreement/personas_tensor_data_18-04-2023_23-59-11.pt',
         'user_conditioned': True
     }
 
@@ -269,10 +236,6 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, 
                                 collate_fn=train_dataset.collate_fn)
 
-
-    full_train_loader = DataLoader(train_dataset, batch_size=len(train_dataset), shuffle=True, 
-                                collate_fn=train_dataset.collate_fn)
-
     test_loader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=True, 
                                 collate_fn=test_dataset.collate_fn)
 
@@ -282,38 +245,47 @@ def main():
     model = MLP(input_size=train_dataset.return_input_dim(), config=config)
     print('model is ready')
 
-    # before training
+    # preload test batch
     test_batch = next(iter(test_loader))
+
+    # before training
     model.to(device)
-    confusion_matrix, test_metrics, output = model.test_step(test_batch, 0)
+    _, test_metrics, _ = model.test_step(test_batch, 0)
 
-    print('confusion matrix: ', confusion_matrix.cpu().numpy())
-    print('f1: ', test_metrics['f1'].cpu().numpy())
+    print('Test f1 (before training): ', test_metrics['f1'].cpu().numpy())
 
-    # training
+    # training loop
     trainer = pl.Trainer(devices=1, max_epochs=config['max_epochs'])
     trainer.fit(model, train_loader)
 
     # after training
+
+    '''
+    # Testing on full train set
+    full_train_loader = DataLoader(train_dataset, batch_size=len(train_dataset), shuffle=True, 
+                                collate_fn=train_dataset.collate_fn)
     model.to(device)
     full_train_batch = next(iter(full_train_loader))
     train_f1 = model.test_step(full_train_batch, 0)
     print('f1 train: ', train_f1.cpu().numpy())
+    '''
 
+    # testing loop 
     model.to(device)
     confusion_matrix, test_metrics, output = model.test_step(test_batch, 0)
 
-    print('confusion matrix: ', confusion_matrix.cpu().numpy())
-    print('f1: ', test_metrics['f1'].cpu().numpy())
+    # final stats
+    print('Test f1 (after training): ', test_metrics['f1'].cpu().numpy())
+    print('Test data confusion matrix: ', confusion_matrix.cpu().numpy())
 
     # save results
     with open('results_{}.pkl'.format(timestampStr), 'wb') as f:
         pkl.dump(dict({
             'config:': config,
-            'train_loss': model.train_log,
-            'confusion_matrix': confusion_matrix.cpu().numpy(),
+            'train_loss_history': model.train_log,
+            'test_confusion_matrix': confusion_matrix.cpu().numpy(),
             'test_metrics': test_metrics,
-            'output': output
+            'network_output': output
         }), f)
 
 if __name__ == '__main__':
