@@ -77,13 +77,16 @@ def generate_train_data(persona_data):
                     print(f'Seen (user {pid}, key {skey}): {srecept_roomname} does not match with {room_name}')
                     continue # skip this example 
 
-                train_pos_data_dict[f'u{pid}-d{data_id}-seen'] = dict({
+                train_pos_data_dict[f'd{data_id}-seen'] = dict({
                     'data_id': data_id,
                     'object_name': object_name, 
+                    'seen_object': True,
                     'recept_name': srecept_receptname,
                     'room_name': room_name, 
                     'room_embb': room_embb, 
+                    'user_id': pid, 
                     'user_embb': user_embb, 
+                    'is_train': bool((data_id+1)%2), # if data_id is odd, then it is train data
                     'ground_truth_score': 1
                     })
 
@@ -101,13 +104,16 @@ def generate_train_data(persona_data):
 
                 neg_roomname, neg_receptname = neg_room_recept.split('|')
 
-                train_neg_data_dict[f'u{pid}-d{data_id}-seen'] = dict({
+                train_neg_data_dict[f'd{data_id}-seen'] = dict({
                     'data_id': data_id,
                     'object_name': object_name, 
+                    'seen_object': True,
                     'recept_name': neg_receptname,
                     'room_name': neg_roomname, 
                     'room_embb': room_encoding_matrix[rooms2index[neg_roomname]], 
+                    'user_id': pid, 
                     'user_embb': user_embb, 
+                    'is_train': bool((data_id+1)%2), # if data_id is odd, then it is train data
                     'ground_truth_score': 0
                     })
 
@@ -148,13 +154,16 @@ def generate_test_data(persona_data):
                     print(f'Unseen (user {pid}, key {uskey}): {usrecept_roomname} does not match with {room_name}')
                     continue # skip this example 
 
-                test_pos_data_dict[f'u{pid}-d{data_id}-unseen'] = dict({
+                test_pos_data_dict[f'd{data_id}-unseen'] = dict({
                     'data_id': data_id,
                     'object_name': object_name, 
+                    'seen_object': False,
                     'recept_name': usrecept_receptname,
                     'room_name': room_name, 
-                    'room_embb': room_embb, 
+                    'room_embb': room_embb,
+                    'user_id': pid, 
                     'user_embb': user_embb, 
+                    'is_train': False, 
                     'ground_truth_score': 1
                     })
 
@@ -172,13 +181,16 @@ def generate_test_data(persona_data):
 
                 neg_roomname, neg_receptname = neg_room_recept.split('|')
 
-                test_neg_data_dict[f'u{pid}-d{data_id}-unseen'] = dict({
+                test_neg_data_dict[f'd{data_id}-unseen'] = dict({
                     'data_id': data_id,
                     'object_name': object_name, 
+                    'seen_object': False,
                     'recept_name': neg_receptname,
                     'room_name': neg_roomname, 
                     'room_embb': room_encoding_matrix[rooms2index[neg_roomname]], 
+                    'user_id': pid, 
                     'user_embb': user_embb, 
+                    'is_train': False, 
                     'ground_truth_score': 0
                     })
 
@@ -187,7 +199,7 @@ def generate_test_data(persona_data):
     return test_pos_data_dict, test_neg_data_dict
 
 
-def tensor_data_with_clip(data_dict, bert_generator):
+def tensor_data_with_bert(data_dict, bert_generator):
 
     keys_list = list(data_dict.keys())
 
@@ -239,7 +251,6 @@ def main(persona_data_path):
     with open(persona_data_path, 'rb') as fh:
         persona_data_dict = pkl.load(fh)
 
-    # TODO: odd obj-recpt pairs train, even obj0recpt pairs test, and keep the user ids intact!
     persona_data = persona_data_dict['personas']
     # print(persona_data[0]['seen_keys'])
     # print(persona_data[0]['seen_key_recepts'])
@@ -257,16 +268,28 @@ def main(persona_data_path):
 
     bert_generator = DistillBERTEmbeddingGenerator()
 
-    train_pos_tensor_data = tensor_data_with_clip(train_pos_data_dict, bert_generator)
-    train_neg_tensor_data = tensor_data_with_clip(train_neg_data_dict, bert_generator)
-    test_pos_tensor_data = tensor_data_with_clip(test_pos_data_dict, bert_generator)
-    test_neg_tensor_data = tensor_data_with_clip(test_neg_data_dict, bert_generator)
+    train_pos_tensor_data = tensor_data_with_bert(train_pos_data_dict, bert_generator)
+    train_neg_tensor_data = tensor_data_with_bert(train_neg_data_dict, bert_generator)
+    test_pos_tensor_data = tensor_data_with_bert(test_pos_data_dict, bert_generator)
+    test_neg_tensor_data = tensor_data_with_bert(test_neg_data_dict, bert_generator)
+
+    train_tensor_data = dict()
+    test_tensor_data = dict()
+
+    for tensor_data in [train_pos_tensor_data, train_neg_tensor_data, test_pos_tensor_data, test_neg_tensor_data]:
+        for key, value in tensor_data.items():
+
+            assert value['is_train'] in [True, False]
+
+            if value['is_train']:
+                train_tensor_data[key] = value
+
+            else:
+                test_tensor_data[key] = tensor_data[key]
 
     torch.save(dict({'config': persona_data_dict['config'],
-                    'train-pos': train_pos_tensor_data, 
-                     'train-neg': train_neg_tensor_data, 
-                     'test-pos': test_pos_tensor_data, 
-                     'test-neg': test_neg_tensor_data}), 'personas_tensor_data_{}.pt'.format(timestampStr))
+                    'train': train_tensor_data, 
+                    'test': test_tensor_data}), 'personas_tensor_data_{}.pt'.format(timestampStr))
 
 
 if __name__ == '__main__':
