@@ -217,13 +217,17 @@ def main():
         'hidden_size': 512,
         'output_size': 1,
         'batch_size': 64,
-        'max_epochs': 10,
+        'max_epochs': 15,
         'lr': 1e-4,
         'num_layers': 2,
         'weight_decay': 1e-6,
         'data_path': 'preferences-by-disagreement/personas_tensor_data_18-04-2023_23-59-11.pt',
-        'user_conditioned': True
+        'user_conditioned': False
     }
+
+    print('config: ')
+    for k, v in config.items():
+        print(f'{k}: {v}')
 
     # load data
     data_dict = torch.load(config['data_path'])
@@ -287,6 +291,9 @@ def main():
             'test_metrics': test_metrics,
             'network_output': output
         }), f)
+
+    for l in model.train_log:
+        print(l)
 
 if __name__ == '__main__':
     main()
