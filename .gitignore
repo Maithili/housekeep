@@ -10,3 +10,4 @@ oracle-log.txt
 *wandb*
 *slurm_logs*
 *.ckpt
+*/lightning_logs
