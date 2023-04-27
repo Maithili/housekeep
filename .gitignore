@@ -1,1 +1,13 @@
-user-preferences-housekeep/lightning_logs
+*.pyc
+*.ipynb_checkpoints
+data/*
+logs/*
+csr_raw/*
+csr_raw_old/*
+protoc*.zip
+oracle-log.txt
+*.pt
+*wandb*
+*slurm_logs*
+*.ckpt
+*/lightning_logs

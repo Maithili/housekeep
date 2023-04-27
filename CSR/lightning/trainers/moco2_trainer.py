@@ -12,6 +12,7 @@ from pytorch_lightning.plugins import DDPPlugin
 from lightning.data_modules.contrastive_data_module import \
     ContrastiveDataModule
 from lightning.modules.moco2_module import MocoV2
+from lightning.modules.moco2_module_mini import MocoV2Lite
 from lightning.custom_callbacks import ContrastiveImagePredictionLogger
 
 
@@ -23,46 +24,59 @@ class MocoV2Trainer(object):
 
     def run(self):
         # Init our data pipeline
-        dm = ContrastiveDataModule(self.conf.batch_size, self.conf.data_path, self.conf.train_object_representation)
+        dm = ContrastiveDataModule(self.conf.batch_size, self.conf.data_path)
 
         # To access the x_dataloader we need to call prepare_data and setup.
         dm.prepare_data()
         dm.setup()
 
         # Init our model
+
+        # Using Lite model that does not load ResNet
+        model = MocoV2Lite(num_negatives=self.conf.queue_size)
+
+        ''' 
+        # Using original CSR model with resnet loaded
         model = None
         if self.conf.pretrain_path is not None and os.path.exists(self.conf.pretrain_path):
             model = MocoV2.load_from_checkpoint(self.conf.pretrain_path)
         else:
             model = MocoV2(num_negatives=self.conf.queue_size)
+        '''
 
         wandb_logger = WandbLogger(project=self.conf.project_name,
                                    name=self.conf.experiment_name,
-                                   job_type='train')
+                                   job_type='train',
+                                   mode='online')
 
         # defining callbacks
+
+        from datetime import datetime
+        dateTimeObj = datetime.now()
+        timestampStr = dateTimeObj.strftime("%m-%d_%H-%M")
+
         checkpoint_callback = ModelCheckpoint(dirpath=self.conf.checkpoint_path,
-                                              filename='model/model-{epoch}-{val_loss:.2f}',
+                                              filename='model_'+timestampStr+'/model-{epoch}-{val_loss:.2f}',
                                               verbose=True,
                                               monitor='val_loss',
                                               mode='min',
-                                              every_n_val_epochs=5,
+                                              every_n_val_epochs=1,
                                               save_top_k=-1)
-        data_callback = ContrastiveImagePredictionLogger()
+        # data_callback = ContrastiveImagePredictionLogger()
         learning_rate_callback = LearningRateMonitor(logging_interval='epoch')
 
         # set up the trainer
         trainer = pl.Trainer(max_epochs=self.conf.epochs,
-                             check_val_every_n_epoch=5,
-                             progress_bar_refresh_rate=self.conf.progress_bar_refresh_rate,
-                             gpus=8,#self.conf.gpus,
+                             check_val_every_n_epoch=1,
+                             gpus=torch.cuda.device_count(),
                              logger=wandb_logger,
-                             callbacks=[checkpoint_callback, learning_rate_callback, data_callback],
+                             callbacks=[checkpoint_callback, learning_rate_callback],
                              checkpoint_callback=True,
                              accelerator=self.conf.accelerator,
                              plugins=DDPPlugin(find_unused_parameters=False),
                              amp_level='O2',
-                             precision=16)
+                             precision=16,
+                             num_sanity_val_steps=1)
 
         # Train the model
         trainer.fit(model, dm)

@@ -23,7 +23,7 @@ from torch.nn import functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
-class MocoV2(pl.LightningModule):
+class MocoV2Lite(pl.LightningModule):
     """
     PyTorch Lightning implementation of `Moco <https://arxiv.org/abs/2003.04297>`_
 
@@ -78,24 +78,19 @@ class MocoV2(pl.LightningModule):
         # create the encoders
         # num_classes is the output fc dimension
         self.emb_dim = emb_dim
-        self.encoder_q, self.encoder_k = self.init_encoders()
+        self.projection_q, self.projection_k = self.init_encoders()
 
         # if use_mlp:  # hack: brute-force replacement
         #     dim_mlp = self.hparams.emb_dim
-        #     self.encoder_q.fc = nn.Sequential(
-        #         nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_q.fc)
-        #     self.encoder_k.fc = nn.Sequential(
-        #         nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_k.fc)
+        #     self.projection_q.fc = nn.Sequential(
+        #         nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.projection_q.fc)
+        #     self.projection_k.fc = nn.Sequential(
+        #         nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.projection_k.fc)
 
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
+        for param_q, param_k in zip(self.projection_q.parameters(), self.projection_k.parameters()):
             param_k.data.copy_(param_q.data)  # initialize
             param_k.requires_grad = False  # not update by gradient
-        
-        for param in self.encoder_q[0].resnet.parameters():
-            param.requires_grad = False
-        for param in self.encoder_k[0].resnet.parameters():
-            param.requires_grad = False
-            
+                    
         # create the queue
         self.register_buffer("queue_edge", torch.randn(emb_dim, num_negatives))
         self.queue_edge = nn.functional.normalize(self.queue_edge, dim=0)
@@ -113,35 +108,19 @@ class MocoV2(pl.LightningModule):
         Override to add your own encoders
         """
 
-        backbone_q = FeatureLearner(
-            in_channels=5,
-            channel_width=64,
-            pretrained=True,
-            num_classes=self.hparams.emb_dim,
-            backbone_str='resnet18')
-        backbone_k = FeatureLearner(
-            in_channels=5,
-            channel_width=64,
-            pretrained=True,
-            num_classes=self.hparams.emb_dim,
-            backbone_str='resnet18')
-
         projection_q = FeedForward(
             [self.emb_dim, self.emb_dim//2, self.emb_dim])
         projection_k = FeedForward(
             [self.emb_dim, self.emb_dim//2, self.emb_dim])
 
-        encoder_q = nn.Sequential(backbone_q, projection_q)
-        encoder_k = nn.Sequential(backbone_k, projection_k)
-
-        return encoder_q, encoder_k
+        return projection_q, projection_k
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
         """
         Momentum update of the key encoder
         """
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
+        for param_q, param_k in zip(self.projection_q.parameters(), self.projection_k.parameters()):
             em = self.hparams.encoder_momentum
             param_k.data = param_k.data * em + param_q.data * (1. - em)
 
@@ -253,7 +232,7 @@ class MocoV2(pl.LightningModule):
         """
 
         # compute query features
-        q = self.encoder_q(img_q)  # queries: NxC
+        q = self.projection_q(img_q)  # queries: NxC
         q = nn.functional.normalize(q, dim=1)
 
         # compute key features
@@ -265,14 +244,16 @@ class MocoV2(pl.LightningModule):
             if self.trainer.use_ddp or self.trainer.use_ddp2:
                 img_k, idx_unshuffle = self._batch_shuffle_ddp(img_k)
 
-            k = self.encoder_k(img_k)  # keys: NxC
+            k = self.projection_k(img_k)  # keys: NxC
             k = nn.functional.normalize(k, dim=1)
 
             # undo shuffle
             if self.trainer.use_ddp or self.trainer.use_ddp2:
                 k = self._batch_unshuffle_ddp(k, idx_unshuffle)
 
-        # split keys and queries into two streams for edge and self features
+        # split keys and queries into two streams for edge and self 
+        # print('node shape: ', k.size())
+        # print('is self feature: ', is_self_feature)
         k_node = k[is_self_feature]
         q_node = q[is_self_feature]
         k_edge = k[~is_self_feature]
@@ -324,20 +305,25 @@ class MocoV2(pl.LightningModule):
 
         self.log_dict(log)
 
+    # def configure_optimizers(self):
+    #     optimizer = torch.optim.SGD(
+    #         self.parameters(),
+    #         self.hparams.learning_rate,
+    #         momentum=self.hparams.momentum,
+    #         weight_decay=self.hparams.weight_decay
+    #     )
+
+    #     scheduler = CosineAnnealingLR(
+    #         optimizer, T_max=100, last_epoch=-1)
+
+    #     lr_scheduler = {'scheduler': scheduler, 'monitor': 'val_acc'}
+
+    #     return [optimizer], [lr_scheduler]
+    
+
     def configure_optimizers(self):
-        optimizer = torch.optim.SGD(
-            self.parameters(),
-            self.hparams.learning_rate,
-            momentum=self.hparams.momentum,
-            weight_decay=self.hparams.weight_decay
-        )
+        return torch.optim.Adam(self.parameters(), lr=1e-3)
 
-        scheduler = CosineAnnealingLR(
-            optimizer, T_max=100, last_epoch=-1)
-
-        lr_scheduler = {'scheduler': scheduler, 'monitor': 'val_acc'}
-
-        return [optimizer], [lr_scheduler]
 
     def _step_helper(self, batch, batch_idx, is_train):
         prefix = 'val'
@@ -345,10 +331,16 @@ class MocoV2(pl.LightningModule):
             prefix = 'train'
 
         q_dict, k_dict = batch
-        img_q = torch.cat(
-            (q_dict['image'], q_dict['mask_1'], q_dict['mask_2']), 1)
-        img_k = torch.cat(
-            (k_dict['image'], k_dict['mask_1'], k_dict['mask_2']), 1)
+
+        # print(q_dict.keys())
+
+        img_q = q_dict['input']
+        img_k = k_dict['input']
+
+        # img_q = torch.cat(
+        #     (q_dict['image'], q_dict['mask_1'], q_dict['mask_2']), 1)
+        # img_k = torch.cat(
+        #     (k_dict['image'], k_dict['mask_1'], k_dict['mask_2']), 1)
 
         logits_node, labels_node, logits_edge, labels_edge = self(
             img_q=img_q,

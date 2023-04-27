@@ -6,7 +6,7 @@ import os
 os.environ['MKL_THREADING_LAYER'] = 'GNU'
 
 from omegaconf import OmegaConf
-from lightning.trainers.moco2_trainer import MocoV2Trainer
+from lightning.trainers.fake_classification_trainer import FakeClassificationTrainer
 
 # set default of print to flush
 # print = functools.partial(print, flush=True)
@@ -18,7 +18,7 @@ def train(conf_path):
 
     os.makedirs(conf.checkpoint_path, exist_ok=True)
 
-    rt = MocoV2Trainer(conf)
+    rt = FakeClassificationTrainer(conf)
     rt.run()
 
 
