@@ -289,6 +289,7 @@ class GeneratePreferenceDataset():
                             print('Label exists')
                             #TODO: make a dictionary of all data required
                             tensor_data.append(dict({
+                                'episode_run_num': episodestep,
                                 'key_item_1': OBJECT_KEY_FILTER[o1],
                                 'key_item_2': OBJECT_KEY_FILTER[o2],
                                 'csr_item_1': csr_feature1,
@@ -300,22 +301,22 @@ class GeneratePreferenceDataset():
                                 'persona_embb': user_embb,
                                 'label': label
                             })) 
-                            print('here222')
 
             if file_idx > 0 and file_idx%200 == 0:
-                torch.save(tensor_data, os.path.join('/srv/rail-lab/flash5/mpatel377/data/csr_clip_preferences', f'{self.split_str}_partial_preferences_{file_idx}.pt'))
+                print(f'Saving {len(tensor_data)} examples')
+                torch.save(tensor_data, os.path.join('/srv/rail-lab/flash5/kvr6/dev/data/csr_clip_preferences', f'{self.split_str}_partial_preferences_{file_idx}.pt'))
 
-train_generator = GeneratePreferenceDataset(                 
-                 root_dir= '/srv/rail-lab/flash5/kvr6/dev/data/csr_full_v2_25-04-2023_22-06-27', 
-                 data_split= DataSplit.TRAIN,
-                 user_personas_path= '/srv/rail-lab/flash5/kvr6/dev/all_preferences_26-04-2023_11-48-18.pt',
-                 image_input= False,
-                 max_annotations = -1,
-                 test_unseen_objects = True,
-                 housekeep_path = '/srv/rail-lab/flash5/kvr6/dev/data/housekeep.npy'
-)
-print('train generator initialized')
-train_generator.generate_data()
+# train_generator = GeneratePreferenceDataset(                 
+#                  root_dir= '/srv/rail-lab/flash5/kvr6/dev/data/csr_full_v2_25-04-2023_22-06-27', 
+#                  data_split= DataSplit.TRAIN,
+#                  user_personas_path= '/srv/rail-lab/flash5/kvr6/dev/all_preferences_26-04-2023_11-48-18.pt',
+#                  image_input= False,
+#                  max_annotations = -1,
+#                  test_unseen_objects = True,
+#                  housekeep_path = '/srv/rail-lab/flash5/kvr6/dev/data/housekeep.npy'
+# )
+# print('train generator initialized')
+# train_generator.generate_data()
 
 test_generator = GeneratePreferenceDataset(                 
                  root_dir= '/srv/rail-lab/flash5/kvr6/dev/data/csr_full_v2_25-04-2023_22-06-27', 

@@ -3,11 +3,19 @@ import pickle as pkl
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.utilities.seed import seed_everything
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+
+import wandb
+from pytorch_lightning.loggers import WandbLogger
+
 
 from torch.utils.data import DataLoader
 
-torch.manual_seed(2345678)
+seed_everything(2345678)
 
 class MLP(pl.LightningModule):
     def __init__(self, input_size, config):
@@ -16,12 +24,36 @@ class MLP(pl.LightningModule):
         # 2-layer MLP
         self.fc1 = nn.Linear(input_size, config['hidden_size'])
         self.fc2 = nn.Linear(config['hidden_size'], config['hidden_size'])
-        self.fc3 = nn.Linear(config['hidden_size'], config['output_size'])
+        self.fc2 = nn.Linear(config['hidden_size'], config['hidden_size'])
+        self.fc3 = nn.Linear(config['hidden_size'], 1)
 
         self.config = config
 
         self.loss = nn.BCEWithLogitsLoss()
         self.train_log = []
+
+        # test values
+        self.rooms_hkp = ['bathroom',
+                            'bedroom',
+                            'childs_room',
+                            'closet',
+                            'corridor',
+                            'dining_room',
+                            'exercise_room',
+                            'garage',
+                            'home_office',
+                            'kitchen',
+                            'living_room',
+                            'lobby',
+                            'pantry_room',
+                            'playroom',
+                            'storage_room',
+                            'television_room',
+                            'utility_room']
+
+        self.room_encoding_matrix = F.one_hot(
+            torch.arange(0, len(self.rooms_hkp)))
+
 
     def forward(self, x):
         x = torch.relu(self.fc1(x))
@@ -30,10 +62,11 @@ class MLP(pl.LightningModule):
         return x
 
     def training_step(self, batch, batch_idx):
+
         x, y = batch
         y_hat = self.forward(x)
         loss = self.loss(y_hat.squeeze(1), y)
-        self.log('train_loss', loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log('train_loss', loss, on_step=True, on_epoch=True, logger=True)
         self.train_log.append(loss.clone().detach().cpu().numpy())
         return loss
 
@@ -41,47 +74,17 @@ class MLP(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.config['lr'], weight_decay=self.config['weight_decay'])
         return optimizer
 
-    def test_step(self, test_batches, batch_idx):
+    def validation_step(self, val_batches, batch_idx):
+
+        print('val')
 
         self.eval()
 
-        '''
-        #DEBUG 
-        if len(test_batches) == 2:
-            x, y = test_batches
-            y_hat = self.forward(x)
-            y_pred = torch.sigmoid(y_hat.squeeze(1))
-            y_pred = torch.round(y_pred)
+        x, y = val_batches
 
-            # compute confusion matrix metrics
-            tp = torch.sum((y == 1) & (y_pred == 1))
-            tn = torch.sum((y == 0) & (y_pred == 0))
-            fp = torch.sum((y == 0) & (y_pred == 1))
-            fn = torch.sum((y == 1) & (y_pred == 0))
-            confusion_matrix = torch.tensor([[tp, fp], [fn, tn]])
-
-            # metrics
-            precision = tp / (tp + fp)
-            recall = tp / (tp + fn)
-            accuracy = (tp + tn) / (tp + tn + fp + fn)
-            f1 = 2 * (precision * recall) / (precision + recall)
-
-            return f1
-        '''
-
-        x, y, data_dict_list = test_batches
         y_hat = self.forward(x)
         y_pred = torch.sigmoid(y_hat.squeeze(1))
         y_pred = torch.round(y_pred)
-
-        return_output = dict({
-            'y': y.cpu().numpy(),
-            'y_pred': y_pred.cpu().detach().numpy(),
-            'user_labels': [data_dict['user_id'] 
-                                for data_dict in data_dict_list],
-            'seen_labels': [data_dict['seen_object']
-                                for data_dict in data_dict_list],
-        })
 
         # compute confusion matrix metrics
         tp = torch.sum((y == 1) & (y_pred == 1))
@@ -96,13 +99,18 @@ class MLP(pl.LightningModule):
         accuracy = (tp + tn) / (tp + tn + fp + fn)
         f1 = 2 * (precision * recall) / (precision + recall)
 
+        self.log('val_prec', precision, on_step=True, on_epoch=True, logger=True)
+        self.log('val_recl', recall, on_step=True, on_epoch=True, logger=True)
+        self.log('val_acc', accuracy, on_step=True, on_epoch=True, logger=True)
+        self.log('val_f1', f1, on_step=True, on_epoch=True, logger=True)
+
         # self.log('test_f1', f1, prog_bar=True, on_step=False, on_epoch=True)
         return confusion_matrix, dict({
             'precision': precision,
             'recall': recall,
             'accuracy': accuracy,
             'f1': f1
-        }), return_output
+        })
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -166,52 +174,54 @@ class Dataset(torch.utils.data.Dataset):
 
         labels = torch.tensor([d['label'] for d in data_points])
 
-        if self.is_train:
-            return input_tensor.to(self.device), \
-                labels.type(torch.float).to(self.device)
-
-        else:
-            return input_tensor.to(self.device), \
-                    labels.type(torch.float).to(self.device), \
-                    data_points
+        
+        return input_tensor.to(self.device), \
+            labels.type(torch.float).to(self.device)
 
 
 def main():
     dateTimeObj = datetime.now()
-    timestampStr = dateTimeObj.strftime("%d-%m-%Y_%H-%M-%S")
+    timestampStr = dateTimeObj.strftime("%d-%m_%H-%M")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     config = {
         'hidden_size': 512,
-        'output_size': 1,
         'batch_size': 32,
-        'max_epochs': 15,
+        'max_epochs': 50,
         'lr': 1e-4,
-        'num_layers': 2,
+        'num_layers': 3,
         'weight_decay': 1e-6,
-        'train_data_path': '/coc/flash5/mpatel377/data/csr_clip_preferences/seen_partial_preferences_4600.pt',
+        'train_data_path': '/srv/rail-lab/flash5/mpatel377/data/csr_clip_preferences/seen_partial_preferences_50600.pt',
+        'val_data_path': '/srv/rail-lab/flash5/kvr6/dev/data/csr_clip_preferences/unseen-val_partial_preferences_51800.pt',
         'test_data_path': None,
-        'user_conditioned': True
+        'user_conditioned': False
     }
 
     print('config: ')
     for k, v in config.items():
         print(f'{k}: {v}')
 
+    wandb_logger = WandbLogger(project='user_specific_preferences',
+                                   name='mlp_user{}_{}'.format(config['user_conditioned'], 
+                                                               timestampStr),
+                                   job_type='train')
+    wandb_logger.experiment.config.update(config)
+
     # load data
     train_data_dict = torch.load(config['train_data_path'])
+    val_data_dict = torch.load(config['val_data_path'])
 
     # create dataset class
     train_dataset = Dataset(train_data_dict, user_conditioned=config['user_conditioned'], is_train=True, device=device)
-    # test_dataset = Dataset(data_dict, user_conditioned=config['user_conditioned'], is_train=False, device=device)
+    val_dataset = Dataset(val_data_dict, user_conditioned=config['user_conditioned'], is_train=False, device=device)
 
     # create dataloader
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, 
                                 collate_fn=train_dataset.collate_fn)
 
-    # test_loader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=True, 
-    #                             collate_fn=test_dataset.collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=len(val_dataset), shuffle=False, 
+                                collate_fn=val_dataset.collate_fn)
 
     print('data loaders are ready')
 
@@ -219,51 +229,43 @@ def main():
     model = MLP(input_size=train_dataset.return_input_dim(), config=config)
     print('model is ready')
 
-    # # preload test batch
-    # test_batch = next(iter(test_loader))
+    # defining callbacks
+    checkpoint_callback_early_stop = ModelCheckpoint(dirpath='/srv/rail-lab/flash5/kvr6/dev/housekeep_csr/user-preferences-housekeep/ckpts',
+                                            filename='mlp_user{}_{}'.format(config['user_conditioned'], 
+                                                               timestampStr)+'/model-{epoch}-{val_f1:.2f}',
+                                            verbose=True, 
+                                            monitor='val_f1',  
+                                            mode='max',
+                                            every_n_val_epochs=1)
+    checkpoint_callback = ModelCheckpoint(dirpath='/srv/rail-lab/flash5/kvr6/dev/housekeep_csr/user-preferences-housekeep/ckpts',
+                                            filename='mlp_user{}_{}'.format(config['user_conditioned'], 
+                                                               timestampStr)+'/model-{epoch}-{val_f1:.2f}',
+                                            verbose=True, 
+                                            mode='max',
+                                            every_n_val_epochs=1)
 
-    # # before training
-    # model.to(device)
-    # _, test_metrics, _ = model.test_step(test_batch, 0)
+    learning_rate_callback = LearningRateMonitor(logging_interval='epoch')
 
-    # print('Test f1 (before training): ', test_metrics['f1'].cpu().numpy())
 
     # training loop
-    trainer = pl.Trainer(max_epochs=config['max_epochs'])
-    trainer.fit(model, train_loader)
+    trainer = pl.Trainer(max_epochs=config['max_epochs'],
+                        check_val_every_n_epoch=1,
+                        logger=wandb_logger,
+                        callbacks=[learning_rate_callback,
+                                checkpoint_callback,
+                                checkpoint_callback_early_stop
+                                ],
+                        checkpoint_callback=True,
+                        num_sanity_val_steps=1)
 
-    # after training
+    trainer.fit(model, train_loader, val_loader)
 
-    '''
-    # Testing on full train set
-    full_train_loader = DataLoader(train_dataset, batch_size=len(train_dataset), shuffle=True, 
-                                collate_fn=train_dataset.collate_fn)
-    model.to(device)
-    full_train_batch = next(iter(full_train_loader))
-    train_f1 = model.test_step(full_train_batch, 0)
-    print('f1 train: ', train_f1.cpu().numpy())
-    '''
+    # Evaluate the model on the held out test set
+    trainer.test() #TODO
 
-    # # testing loop 
-    # model.to(device)
-    # confusion_matrix, test_metrics, output = model.test_step(test_batch, 0)
+    # Close wandb run
+    wandb.finish()
 
-    # # final stats
-    # print('Test f1 (after training): ', test_metrics['f1'].cpu().numpy())
-    # print('Test data confusion matrix: ', confusion_matrix.cpu().numpy())
-
-    # # save results
-    # with open('results_{}.pkl'.format(timestampStr), 'wb') as f:
-    #     pkl.dump(dict({
-    #         'config:': config,
-    #         'train_loss_history': model.train_log,
-    #         'test_confusion_matrix': confusion_matrix.cpu().numpy(),
-    #         'test_metrics': test_metrics,
-    #         'network_output': output
-    #     }), f)
-
-    for l in model.train_log:
-        print(l)
 
 if __name__ == '__main__':
     main()
