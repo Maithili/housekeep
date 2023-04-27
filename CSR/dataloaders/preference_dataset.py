@@ -7,10 +7,11 @@ from tqdm import tqdm
 from PIL import Image
 from shared.data_split import DataSplit
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from lightning.modules.moco2_module_mini import MocoV2Lite
 from transformers import CLIPImageProcessor
-from dataloaders.contrastive_dataset import object_key_filter, obj_episode_filters 
+from dataloaders.contrastive_dataset import object_key_filter, obj_episode_filters, rooms_hkp
 
 
 GROUND_TRUTH_FILE = '/srv/rail-lab/flash5/mpatel377/data/csr/scene_graph_edges_complete.pt'
@@ -36,9 +37,13 @@ class PreferenceDataset(Dataset):
                  csr_ckpt_path: str,
                  image_input: bool = False,
                  max_annotations = 100000,
-                 test_unseen_objects = True
+                 test_unseen_objects = True,
+                 input_room_embedding = False
                  ):
-     
+
+        self.room_encoding_matrix = self.room_encoding_matrix = F.one_hot(
+                                    torch.arange(0, len(rooms_hkp)))
+
        
         use_obj, use_episode = obj_episode_filters(data_split, test_unseen_objects)
         
@@ -135,6 +140,19 @@ class PreferenceDataset(Dataset):
 
         print("Map generated")
 
+        receptacle_key_to_room_dict = {}
+
+        self.input_room_embedding = input_room_embedding
+
+        if input_room_embedding:
+            # get room from receptacle
+            for receptacle in self.receptacle_clips:
+                receptacle_key = object_key_filter[receptacle]
+                room_indexed, _ = receptacle_key.split('-')
+                room_name_split = [k for k in room_indexed.split('_') if not k.isdigit()] # [storage, room]
+                room_name = '_'.join(room_name_split)
+                receptacle_key_to_room_dict[receptacle_key] = room_name
+
         self.indexed_data = []
         for obj in tqdm(self.object_clips):
             for epstep_obj in self.object_clips[obj]:
@@ -143,7 +161,11 @@ class PreferenceDataset(Dataset):
                         for epstep_rec in self.receptacle_clips[receptacle]:
                             if receptacle in self.receptacle_csrs and epstep_rec in self.receptacle_csrs[receptacle]:
                                 label = torch.tensor([receptacle in self.final_map[obj]])
-                                self.indexed_data.append((obj, epstep_obj, receptacle, epstep_rec, label))
+                                if input_room_embedding:
+                                    self.indexed_data.append((obj, epstep_obj, receptacle, epstep_rec, 
+                                                              receptacle_key_to_room_dict[object_key_filter[receptacle]], label))
+                                else:
+                                    self.indexed_data.append((obj, epstep_obj, receptacle, epstep_rec, label))
 
         print('Indexed data created!!')
 
@@ -163,13 +185,22 @@ class PreferenceDataset(Dataset):
             return None
         dataitems = {}
         for datapoint in self.indexed_data:
-            obj, epstep_obj, receptacle, epstep_rec, label = datapoint
+
+            if self.input_room_embedding:
+                obj, epstep_obj, receptacle, epstep_rec, room_name, label = datapoint
+            else:
+                obj, epstep_obj, receptacle, epstep_rec, label = datapoint
+
             if epstep_obj//1000 == self.episode_curr:
                 clip_obj = self.object_clips[obj][epstep_obj]
                 csr_obj = self.object_csrs[obj][epstep_obj]
                 clip_receptacle = self.receptacle_clips[receptacle][epstep_rec]
                 csr_receptacle = self.receptacle_csrs[receptacle][epstep_rec]
-                dataitem = {'csr_item_1':csr_obj, 'clip_item_1':clip_obj, 'csr_item_2':csr_receptacle, 'clip_item_2':clip_receptacle, 'label':label}
+                dataitem = {'csr_item_1':csr_obj, 'clip_item_1':clip_obj, 
+                            'csr_item_2':csr_receptacle, 'clip_item_2':clip_receptacle, 
+                            'room_embb': self.room_encoding_matrix[rooms_hkp.index(room_name)] \
+                                if self.input_room_embedding else None,
+                            'label':label}
                 if obj not in dataitems: dataitems[obj] = {}
                 if receptacle not in dataitems[obj]: dataitems[obj][receptacle] = []
                 dataitems[obj][receptacle].append(self.collate_fn([dataitem]))
@@ -208,8 +239,12 @@ class PreferenceDataset(Dataset):
         csr_embbs_2 = torch.cat([torch.tensor(d['csr_item_2']) for d in data_points], dim=0)
         clip_embbs_2 = torch.cat([torch.tensor(d['clip_item_2']) for d in data_points], dim=0)
 
-        # input_tensor = torch.cat([csr_embbs_1, clip_embbs_1, csr_embbs_2, clip_embbs_2], dim=1)
-        input_tensor = torch.cat([clip_embbs_1, clip_embbs_2], dim=1)
+        if self.input_room_embedding:
+            room_embbs = torch.cat([torch.tensor(d['room_embb']).unsqueeze(0) for d in data_points], dim=0)
+            input_tensor = torch.cat([csr_embbs_1, clip_embbs_1, csr_embbs_2, clip_embbs_2, room_embbs], dim=1)
+
+        else:
+            input_tensor = torch.cat([csr_embbs_1, clip_embbs_1, csr_embbs_2, clip_embbs_2], dim=1)
 
         labels = torch.tensor([d['label'] for d in data_points]).float()
 
